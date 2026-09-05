@@ -1,0 +1,727 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// S01: Identity & Access
+// ============================================================================
+
+model User {
+  id                String     @id @default(cuid())
+  email             String     @unique
+  name              String?
+  passwordHash      String
+  role              UserRole   @default(VIEWER)
+  territories       Territory[] @relation("UserTerritories")
+  auditLogs         AuditLog[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  ANALYST
+  OPERATOR
+  VIEWER
+}
+
+model AuditLog {
+  id                String     @id @default(cuid())
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action            String     // "CREATE", "UPDATE", "DELETE", "VIEW", "EXPORT"
+  entityType        String     // "Territory", "Intervention", "Evidence", etc.
+  entityId          String
+  changes           String?    // JSON stringified changes
+  ipAddress         String?
+  userAgent         String?
+  timestamp         DateTime   @default(now())
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([timestamp])
+}
+
+// ============================================================================
+// S02: Territorial Data Foundation
+// ============================================================================
+
+model Territory {
+  id                String     @id @default(cuid())
+  name              String     // e.g., "Pinofranqueado"
+  region            String     // e.g., "Extremadura"
+  province          String     // e.g., "Cáceres"
+  adminLevel        String?    // "municipality", "district", etc.
+  latitude          Float
+  longitude         Float
+  areaHectares      Float      // Total territory area
+  users             User[]     @relation("UserTerritories")
+  parcels           Parcel[]
+  incidents         Incident[]
+  interventions     Intervention[]
+  alerts            FirewatchAlert[]
+  satelliteImages   SatelliteImage[]
+  riskAssessments   RiskAssessment[]
+  biomassResources  BiomassResource[]
+  contracts         Contract[]
+  infrastructures   Infrastructure[]
+  territoralImpact  TerritorialImpact?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([name])
+}
+
+model Parcel {
+  id                String     @id @default(cuid())
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  name              String
+  areaHectares      Float
+  ownershipType     String?    // "public", "private", "community"
+  managementUnit    String?
+  latitude          Float
+  longitude         Float
+  elevation         Float?
+  slope             Float?     // degrees
+  aspect            String?    // "N", "NE", "E", etc.
+  soilType          String?
+  accessibility     Float?     // 0-1 scale
+  forestStands      ForestStand[]
+  vegetation        VegetationData?
+  historicalIncidents Incident[]
+  interventions     Intervention[] @relation("ParcelInterventions")
+  evidence          Evidence[] @relation("ParcelEvidence")
+  riskAssessment    RiskAssessment?
+  biomassResources  BiomassResource[]
+  grazingParcels    GrazingParcel[]
+  hydrology         Hydrology?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+  @@index([name])
+}
+
+model ForestStand {
+  id                String     @id @default(cuid())
+  parcelId          String
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  name              String
+  standAge          Int?       // years
+  primarySpecies    String     // e.g., "Pinus pinaster"
+  speciesComposition String?    // JSON array
+  density           Float?     // trees/hectare
+  dbh               Float?     // diameter at breast height (cm)
+  height            Float?     // average height (m)
+  fuelLoad          Float?     // tonnes/hectare
+  lastInventoryDate DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([parcelId])
+}
+
+model VegetationData {
+  id                String     @id @default(cuid())
+  parcelId          String     @unique
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  vegetationType    String     // "forest", "shrubland", "grassland", etc.
+  ndvi              Float?     // Normalized Difference Vegetation Index
+  lai               Float?     // Leaf Area Index
+  biomass           Float?     // tonnes/hectare
+  crown_cover       Float?     // percentage
+  groundCover       Float?     // percentage
+  fuelModel         Int?       // USDA fire behavior fuel model
+  lastObservation   DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+model Incident {
+  id                String     @id @default(cuid())
+  parcelId          String
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  type              String     // "wildfire", "disease", "pest", etc.
+  incidentDate      DateTime
+  description       String?
+  hectaresAffected  Float?
+  createdAt         DateTime   @default(now())
+
+  @@index([parcelId])
+}
+
+// ============================================================================
+// S03: Geospatial Engine
+// ============================================================================
+
+model MapLayer {
+  id                String     @id @default(cuid())
+  name              String
+  type              String     // "parcel", "risk", "satellite", "intervention", etc.
+  visible           Boolean    @default(true)
+  opacity           Float      @default(1.0)
+  zIndex            Int        @default(0)
+  style             String?    // JSON
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+// ============================================================================
+// S04 & M00-SAT: Satellite Intelligence
+// ============================================================================
+
+model SatelliteConstellation {
+  id                String     @id @default(cuid())
+  name              String     // e.g., "Sentinel-2", "MODIS"
+  provider          String     // e.g., "ESA", "NASA"
+  resolutionMeters  Float
+  revisitDays       Int
+  operationalSince  DateTime?
+  images            SatelliteImage[]
+  observations      SatelliteObservation[]
+}
+
+model SatelliteImage {
+  id                String     @id @default(cuid())
+  constellationId   String
+  constellation     SatelliteConstellation @relation(fields: [constellationId], references: [id])
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  acquisitionTime   DateTime
+  cloudCover        Float?     // percentage
+  resolution        Float?
+  bands             String?    // JSON array of available bands
+  url               String?
+  storageLocation   String?
+  processedAt       DateTime?
+  createdAt         DateTime   @default(now())
+
+  @@index([territoryId])
+  @@index([acquisitionTime])
+}
+
+model SatelliteObservation {
+  id                String     @id @default(cuid())
+  constellationId   String
+  constellation     SatelliteConstellation @relation(fields: [constellationId], references: [id])
+  observationType   String     // "hotspot", "vegetation", "burn_area", etc.
+  latitude          Float
+  longitude         Float
+  confidence        Float      // 0-1
+  value             Float?     // Depends on type (temp, NDVI, etc.)
+  acquisitionTime   DateTime
+  sourceReference   String?
+  createdAt         DateTime   @default(now())
+
+  @@index([acquisitionTime])
+  @@index([confidence])
+}
+
+// ============================================================================
+// FIREWATCH: Early Wildfire Detection
+// ============================================================================
+
+model FirewatchAlert {
+  id                String     @id @default(cuid())
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  latitude          Float
+  longitude         Float
+  severity          String     @default("MODERATE") // "LOW", "MODERATE", "HIGH", "CRITICAL"
+  confidence        Float      // 0-1
+  ignitionProbability Float?
+  affectedHectares  Float?
+  status            String     @default("ACTIVE")  // "ACTIVE", "MONITORED", "ESCALATED", "RESOLVED"
+  detectedAt        DateTime   @default(now())
+  escalatedAt       DateTime?
+  resolvedAt        DateTime?
+  hotspotCount      Int        @default(1)
+  correlatedSatelliteImages String? // JSON array of image IDs
+  notes             String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+  @@index([severity])
+  @@index([status])
+  @@index([detectedAt])
+}
+
+// ============================================================================
+// M01: Digital Twin
+// ============================================================================
+
+model Hydrology {
+  id                String     @id @default(cuid())
+  parcelId          String     @unique
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  waterAvailability String?    // "high", "medium", "low"
+  streamPresence    Boolean    @default(false)
+  streamName        String?
+  distanceToStream  Float?     // meters
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+model Infrastructure {
+  id                String     @id @default(cuid())
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  type              String     // "road", "power_line", "building", "water_point", etc.
+  name              String?
+  latitude          Float
+  longitude         Float
+  condition         String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+}
+
+// ============================================================================
+// M02: Evidence Engine
+// ============================================================================
+
+model Evidence {
+  id                String     @id @default(cuid())
+  type              String     // "satellite_image", "inspection", "measurement", "document", etc.
+  source            String     // "sentinel-2", "user_upload", "drone", "field_survey", etc.
+  sourceSystem      String?
+  parcelId          String?
+  parcel            Parcel?    @relation("ParcelEvidence", fields: [parcelId], references: [id], onDelete: SetNull)
+  interventionId    String?
+  intervention      Intervention? @relation(fields: [interventionId], references: [id], onDelete: SetNull)
+  riskAssessmentId  String?
+  riskAssessment    RiskAssessment? @relation(fields: [riskAssessmentId], references: [id], onDelete: SetNull)
+  timestamp         DateTime   @default(now())
+  latitude          Float?
+  longitude         Float?
+  dataHash          String     // SHA256 for integrity verification
+  dataUrl           String?    // Reference to actual data storage
+  confidence        Float?     // 0-1
+  verificationState String     @default("PENDING") // "PENDING", "VERIFIED", "REJECTED"
+  verifiedBy        String?    // User ID
+  verifiedAt        DateTime?
+  metadata          String?    // JSON for flexible properties
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([parcelId])
+  @@index([interventionId])
+  @@index([timestamp])
+  @@index([verificationState])
+}
+
+model MrvRecord {
+  id                String     @id @default(cuid())
+  interventionId    String
+  intervention      Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+  recordType        String     // "monitoring", "reporting", "verification"
+  carbonMeasured    Float?     // tonnes CO2e
+  biomassMeasured   Float?     // tonnes
+  vegetationChange  Float?     // percentage or value
+  riskReduction     Float?     // percentage
+  evidenceIds       String?    // JSON array
+  certificationReady Boolean    @default(false)
+  certificationBody String?
+  timestamp         DateTime   @default(now())
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([interventionId])
+}
+
+// ============================================================================
+// M03: Risk Engine
+// ============================================================================
+
+model RiskAssessment {
+  id                String     @id @default(cuid())
+  parcelId          String?    @unique
+  parcel            Parcel?    @relation(fields: [parcelId], references: [id], onDelete: SetNull)
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  hazard            Float      // 0-1 wildfire hazard
+  exposure          Float      // 0-1 exposure to population/assets
+  vulnerability     Float      // 0-1 vulnerability
+  ignitionProbability Float?
+  propagationPotential Float?
+  severity          Float?
+  wildcardRiskScore Float      // Combined 0-1 score
+  riskLevel         String     @default("MODERATE") // "LOW", "MODERATE", "HIGH", "CRITICAL"
+  priorityRank      Int?       // For territorial prioritization
+  evidence          Evidence[]
+  assessedAt        DateTime   @default(now())
+  validUntil        DateTime?  // When reassessment needed
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+  @@index([riskLevel])
+  @@index([priorityRank])
+}
+
+// ============================================================================
+// M04: Intervention Portfolio
+// ============================================================================
+
+model Intervention {
+  id                String     @id @default(cuid())
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  parcelIds         String?    // JSON array
+  parcels           Parcel[]   @relation("ParcelInterventions")
+  type              String     // "mechanical_clearing", "controlled_burn", "thinning", "grazing", "biomass_extraction", etc.
+  name              String
+  description       String?
+  priority          Int        @default(999) // Lower = higher priority
+  status            String     @default("PROPOSED") // "PROPOSED", "PLANNED", "SCHEDULED", "IN_PROGRESS", "COMPLETED", "ABANDONED"
+  hectares          Float
+  estimatedCost     Float?
+  actualCost        Float?
+  expectedRiskReduction Float?  // percentage
+  biomassMeasured   Float?     // tonnes
+  biomassPotential  Float?     // expected tonnes
+  carbonImpact      Float?     // tonnes CO2e
+  startDate         DateTime?
+  endDate           DateTime?
+  latitude          Float
+  longitude         Float
+  evidence          Evidence[]
+  mrvRecords        MrvRecord[]
+  operationOrders   OperationOrder[]
+  costAnalysis      EconomicAnalysis?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+  @@index([status])
+  @@index([priority])
+}
+
+// ============================================================================
+// M05: Operations Engine
+// ============================================================================
+
+model OperationOrder {
+  id                String     @id @default(cuid())
+  interventionId    String
+  intervention      Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+  code              String     @unique
+  description       String?
+  status            String     @default("DRAFT") // "DRAFT", "ISSUED", "IN_EXECUTION", "COMPLETED", "CANCELLED"
+  team              String?
+  equipment         String?    // JSON array
+  safetyRequirements String?
+  issuedAt          DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([interventionId])
+  @@index([status])
+}
+
+// ============================================================================
+// M06: Economic Engine
+// ============================================================================
+
+model EconomicAnalysis {
+  id                String     @id @default(cuid())
+  interventionId    String     @unique
+  intervention      Intervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+  capex             Float?     // Capital expenditure
+  opex              Float?     // Operational expenditure
+  costBenefit       Float?     // Net benefit
+  costPerHectare    Float?
+  revenues          Float?     // From biomass, carbon, etc.
+  margin            Float?
+  roi               Float?     // Return on Investment %
+  paybackYears      Float?
+  assumptions       String?    // JSON
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+// ============================================================================
+// M07: Territorial Impact Engine
+// ============================================================================
+
+model TerritorialImpact {
+  id                String     @id @default(cuid())
+  territoryId       String     @unique
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  employment        Int?       // Jobs created/sustained
+  income            Float?     // € generated
+  carbonSequestered Float?     // tonnes CO2e
+  biodiversityScore Float?     // 0-1
+  socialAcceptance  Float?     // 0-1
+  environmentalBenefit Float?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+// ============================================================================
+// M08: MRV (Monitoring, Reporting, Verification)
+// ============================================================================
+// MrvRecord already defined above in M02
+
+// ============================================================================
+// M09: Predictive Maintenance
+// ============================================================================
+
+model Asset {
+  id                String     @id @default(cuid())
+  name              String
+  assetType         String     // "equipment", "infrastructure", "vehicle", etc.
+  status            String     @default("OPERATIONAL")
+  condition         Float?     // 0-1 health score
+  lastMaintenanceDate DateTime?
+  nextMaintenanceDate DateTime?
+  maintenancePlan   MaintenancePlan?
+  inspections       Inspection[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+model MaintenancePlan {
+  id                String     @id @default(cuid())
+  assetId           String     @unique
+  asset             Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  frequency         String     // "daily", "weekly", "monthly", "quarterly", "annual"
+  lastInspectionDate DateTime?
+  nextScheduledDate DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+model Inspection {
+  id                String     @id @default(cuid())
+  assetId           String
+  asset             Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  inspectionDate    DateTime
+  findings          String?    // JSON
+  anomalies         String?    // JSON array
+  riskLevel         String?    // "low", "medium", "high"
+  recommendedAction String?
+  createdAt         DateTime   @default(now())
+
+  @@index([assetId])
+}
+
+// ============================================================================
+// M11: Bioeconomy Resource Engine
+// ============================================================================
+
+model BiomassResource {
+  id                String     @id @default(cuid())
+  parcelId          String
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  resourceType      String     // "roundwood", "residues", "pruning", "agricultural_residue", etc.
+  availableTonnes   Float
+  humidity          Float?     // percentage
+  quality           String?    // "premium", "standard", "low", etc.
+  accessibility     Float?     // 0-1
+  extractionCost    Float?     // €/tonne
+  marketValue       Float?     // €/tonne
+  estimatedRevenue  Float?     // total potential revenue
+  assessmentDate    DateTime   @default(now())
+  lots              ResourceLot[]
+  circularUses      CircularUse[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([parcelId])
+  @@index([territoryId])
+}
+
+model ResourceLot {
+  id                String     @id @default(cuid())
+  resourceId        String
+  resource          BiomassResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  lotNumber         String     @unique
+  tonnes            Float
+  quality           String?
+  status            String     @default("AVAILABLE") // "AVAILABLE", "PUBLISHED", "OFFERED", "CONTRACTED", "DELIVERED"
+  marketplaceListings MarketplaceListing[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([resourceId])
+  @@index([status])
+}
+
+// ============================================================================
+// M12: REDBIOMASA Marketplace
+// ============================================================================
+
+model MarketplaceListing {
+  id                String     @id @default(cuid())
+  lotId             String
+  lot               ResourceLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  title             String
+  description       String?
+  askingPrice       Float
+  status            String     @default("PUBLISHED") // "PUBLISHED", "NEGOTIATING", "SOLD"
+  publishedAt       DateTime   @default(now())
+  offers            Offer[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([lotId])
+  @@index([status])
+}
+
+model Offer {
+  id                String     @id @default(cuid())
+  listingId         String
+  listing           MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerName         String
+  buyerEmail        String?
+  proposedPrice     Float
+  quantity          Float      // tonnes
+  status            String     @default("PENDING") // "PENDING", "NEGOTIATING", "ACCEPTED", "REJECTED"
+  submittedAt       DateTime   @default(now())
+  negotiations      Negotiation[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([listingId])
+  @@index([status])
+}
+
+model Negotiation {
+  id                String     @id @default(cuid())
+  offerId           String
+  offer             Offer      @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  round             Int
+  proposedPrice     Float?
+  proposedQuantity  Float?
+  notes             String?
+  timestamp         DateTime   @default(now())
+  createdAt         DateTime   @default(now())
+
+  @@index([offerId])
+}
+
+model Contract {
+  id                String     @id @default(cuid())
+  territoryId       String
+  territory         Territory  @relation(fields: [territoryId], references: [id], onDelete: Cascade)
+  contractNumber    String     @unique
+  buyerName         String
+  buyerEmail        String?
+  resource          String     // Description of resource
+  tonnes            Float
+  unitPrice         Float      // €/tonne
+  totalValue        Float      // € total
+  deliveryLocation  String?
+  deliveryDate      DateTime?
+  status            String     @default("ACTIVE") // "ACTIVE", "IN_TRANSIT", "DELIVERED", "COMPLETED"
+  transport         Transport?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([territoryId])
+  @@index([status])
+}
+
+model Transport {
+  id                String     @id @default(cuid())
+  contractId        String     @unique
+  contract          Contract   @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  carrier           String?
+  vehicle           String?
+  loadingDate       DateTime?
+  departureLocation String?
+  destination       String?
+  deliveredAt       DateTime?
+  status            String     @default("PENDING") // "PENDING", "IN_TRANSIT", "DELIVERED"
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
+
+// ============================================================================
+// M13: Livestock & Grazing Engine
+// ============================================================================
+
+model GrazingParcel {
+  id                String     @id @default(cuid())
+  parcelId          String
+  parcel            Parcel     @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  vegetationType    String?    // Type of vegetation for grazing
+  fuelLoad          Float?     // Current fuel load
+  goatCount         Int?       // Number of goats
+  sheepCount        Int?       // Number of sheep
+  stockingDensity   Float?     // Animals per hectare
+  dailyConsumption  Float?     // kg/day
+  grazingDuration   Int?       // days
+  hectaresTreated   Float?
+  fuelReduction     Float?     // tonnes
+  preventiveService Boolean    @default(false)
+  serviceCost       Float?     // €
+  avoidedMechanicalCost Float? // € saved
+  fireRiskReduction Float?     // percentage
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([parcelId])
+}
+
+// ============================================================================
+// M14: Circular Value Engine
+// ============================================================================
+
+model CircularUse {
+  id                String     @id @default(cuid())
+  resourceId        String
+  resource          BiomassResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  destination       String     // "energy", "pellets", "chips", "timber", "biochar", "compost", "grazing", "carbon", "ecosystem_services", "other"
+  tonnes            Float?
+  revenue           Float?     // €
+  processingCost    Float?     // €
+  transportCost     Float?     // €
+  margin            Float?     // €
+  carbonImpact      Float?     // tonnes CO2e
+  employment        Int?       // Jobs
+  recommendation    Boolean    @default(false) // Highest-value destination?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([resourceId])
+  @@index([destination])
+}
+
+// ============================================================================
+// COPILOT: AI Assistant Infrastructure
+// ============================================================================
+
+model CopilotContext {
+  id                String     @id @default(cuid())
+  userId            String
+  sessionId         String     @unique
+  selectedTerritory String?
+  selectedAlert     String?
+  selectedParcel    String?
+  selectedResource  String?
+  selectedIntervention String?
+  selectedEvidence  String?
+  selectedContract  String?
+  conversationHistory String? // JSON array
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+}
